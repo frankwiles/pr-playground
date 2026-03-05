@@ -1,15 +1,15 @@
-# PR Playground 
+# PR Playground
 
-Figured it best to build this in an entirely separate repo for testing until we're 
-ready to merge this into the Django repo itself. 
+Figured it best to build this in an entirely separate repo for testing until we're
+ready to merge this into the Django repo itself.
 
-## Important Files 
+## Important Files
 
-- [GHA YAML Configuration](.github/workflows/pr-processing.yaml)
-- [Validation Code](.github/workflows/pr-processing/check_pr.py)
-- [Comment Messages](.github/workflows/pr-processing/messages/)
-- [Tests](.github/workflows/pr-processing/test/)
+- [GHA YAML Configuration](https://github.com/frankwiles/pr-playground/blob/main/.github/workflows/pr-processing.yaml)
+- [Validation Code](https://github.com/frankwiles/pr-playground/blob/main/.github/workflows/pr-processing/check_pr.py)
+- [Comment Messages](https://github.com/frankwiles/pr-playground/blob/main/.github/workflows/pr-processing/messages/)
+- [Tests](https://github.com/frankwiles/pr-playground/blob/main/.github/workflows/pr-processing/test/)
 
-# Authors 
+# Authors
 
-Frank Wiles <frank@revsys.com> 
+Frank Wiles <frank@revsys.com>
