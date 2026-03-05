@@ -491,3 +491,22 @@ def test_integration_unedited_template_fails_all_checks():
     ]
     for i, result in enumerate(results, 1):
         assert result is not None, f"Check {i} should have failed on raw template"
+
+
+def test_integration_docs_only_pr_skips_all_checks(monkeypatch, capsys):
+    """A docs-only PR should pass without running any checks, even with an empty body."""
+    monkeypatch.setattr(check_pr, "PR_NUMBER", "42")
+    monkeypatch.setattr(check_pr, "PR_BODY", "")
+    monkeypatch.setattr(check_pr, "get_pr_files", lambda: DOCS_ONLY_FILES)
+    # Ensure github_request is never called (no comment posted, no PR closed).
+    monkeypatch.setattr(
+        check_pr,
+        "github_request",
+        MagicMock(side_effect=AssertionError("should not call github_request")),
+    )
+
+    check_pr.main()
+
+    captured = capsys.readouterr()
+    assert "docs/" in captured.out
+    assert "skipping" in captured.out.lower()

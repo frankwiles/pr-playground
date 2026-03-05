@@ -261,6 +261,11 @@ def check_checklist(pr_body: str) -> str | None:
 def main() -> None:
     pr_files = get_pr_files()
 
+    # Docs-only PRs are exempt from all quality checks.
+    if pr_files and all(f.startswith("docs/") for f in pr_files):
+        print(f"✓ PR #{PR_NUMBER} only touches docs/ — skipping all checks.")
+        return
+
     checks = [
         lambda: check_trac_ticket(PR_BODY, pr_files),
         lambda: check_trac_status(PR_BODY, ACCEPTABLE_STAGES),
