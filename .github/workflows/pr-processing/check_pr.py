@@ -11,6 +11,7 @@ import csv
 import io
 import os
 import re
+import time
 from pathlib import Path
 
 import httpx
@@ -21,12 +22,10 @@ GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 REPO = os.environ["REPO"]
 PR_NUMBER = os.environ["PR_NUMBER"]
 PR_BODY = os.environ.get("PR_BODY", "")
-ACCEPTABLE_STAGES = [
-    q.strip()
-    for q in os.environ.get(
-        "ACCEPTABLE_STAGES", "Needs Patch,Needs PR Review,Waiting on Author"
-    ).split(",")
-]
+PATCH_POLL_INTERVAL = int(os.environ.get("PATCH_POLL_INTERVAL", "15"))  # seconds between polls
+PATCH_POLL_TIMEOUT = int(
+    os.environ.get("PATCH_POLL_TIMEOUT", "600")
+)  # max seconds to wait (10 min)
 
 MESSAGES_DIR = Path(__file__).parent / "messages"
 
@@ -75,35 +74,6 @@ def get_pr_files() -> list[str]:
     return files
 
 
-def compute_trac_stage(row: dict) -> str:
-    """
-    Derive the human-readable stage name from raw Trac CSV fields.
-
-    Django's triage docs describe three stages within the "Accepted" stage:
-      Needs Patch       — stage=Accepted, has_patch=0
-      Needs PR Review   — stage=Accepted, has_patch=1, no fix flags set
-      Waiting on Author — stage=Accepted, has_patch=1, one or more fix flags set
-
-    Tickets outside "Accepted" return their raw stage value
-    (e.g. "Unreviewed", "Ready for Checkin", "Someday/Maybe").
-    """
-    stage = row.get("stage", "").strip()
-    if stage != "Accepted":
-        return stage
-
-    has_patch = row.get("has_patch", "0").strip() == "1"
-    needs_fix = any(
-        row.get(flag, "0").strip() == "1"
-        for flag in ("needs_better_patch", "needs_docs", "needs_tests")
-    )
-
-    if not has_patch:
-        return "Needs Patch"
-    if needs_fix:
-        return "Waiting on Author"
-    return "Needs PR Review"
-
-
 # ── Body rewriting ────────────────────────────────────────────────────────────
 
 
@@ -146,13 +116,12 @@ def check_trac_ticket(pr_body: str, pr_files: list[str]) -> str | None:
     return load_message("no_trac_ticket.txt")
 
 
-def check_trac_status(pr_body: str, acceptable_stages: list[str]) -> str | None:
+def check_trac_status(pr_body: str) -> str | None:
     """
-    Check 2: The referenced Trac ticket must be in an acceptable stage.
+    Check 2: The referenced Trac ticket must be in the 'Accepted' stage.
 
-    Fetches ticket data via the public Trac CSV API and derives the stage
-    name from the stage + flag fields. Network errors are treated as
-    non-fatal so that a Trac outage doesn't block all PRs.
+    Fetches ticket data via the public Trac CSV API. Network errors are
+    treated as non-fatal so that a Trac outage doesn't block all PRs.
     """
     match = re.search(r"\bticket-(\d+)\b", pr_body, re.IGNORECASE)
     if not match:
@@ -170,7 +139,6 @@ def check_trac_status(pr_body: str, acceptable_stages: list[str]) -> str | None:
                 "invalid_trac_status.txt",
                 ticket_id=ticket_id,
                 stage="(ticket not found)",
-                acceptable_stages=", ".join(acceptable_stages),
             )
         print(
             f"Warning: HTTP {exc.response.status_code} fetching ticket {ticket_id} — skipping status check."
@@ -186,16 +154,54 @@ def check_trac_status(pr_body: str, acceptable_stages: list[str]) -> str | None:
         print(f"Warning: Empty CSV for ticket {ticket_id} — skipping status check.")
         return None
 
-    stage = compute_trac_stage(row)
-    if stage in acceptable_stages:
+    stage = row.get("stage", "").strip()
+    if stage == "Accepted":
         return None
 
-    return load_message(
-        "invalid_trac_status.txt",
-        ticket_id=ticket_id,
-        stage=stage,
-        acceptable_stages=", ".join(acceptable_stages),
-    )
+    return load_message("invalid_trac_status.txt", ticket_id=ticket_id, stage=stage)
+
+
+def check_trac_has_patch(pr_body: str) -> str | None:
+    """
+    Check 3: The referenced Trac ticket must have has_patch=1.
+
+    Polls the Trac CSV API every PATCH_POLL_INTERVAL seconds for up to
+    PATCH_POLL_TIMEOUT seconds. Network errors skip the check. If the
+    flag is still unset after the timeout, the PR is closed.
+    """
+    match = re.search(r"\bticket-(\d+)\b", pr_body, re.IGNORECASE)
+    if not match:
+        return None  # No ticket found; Check 1 already reported that.
+
+    ticket_id = match.group(1)
+    url = f"https://code.djangoproject.com/ticket/{ticket_id}?format=csv"
+    deadline = time.monotonic() + PATCH_POLL_TIMEOUT
+
+    while True:
+        try:
+            response = httpx.get(url, timeout=TRAC_TIMEOUT)
+            response.raise_for_status()
+            reader = csv.DictReader(io.StringIO(response.text))
+            row = next(reader, None)
+            if row is not None and row.get("has_patch", "0").strip() == "1":
+                return None
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None  # Ticket not found — already reported by check_trac_status.
+            print(
+                f"Warning: HTTP {exc.response.status_code} fetching ticket {ticket_id} — skipping has_patch check."
+            )
+            return None
+        except Exception as exc:
+            print(f"Warning: Could not fetch ticket {ticket_id}: {exc} — skipping has_patch check.")
+            return None
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(PATCH_POLL_INTERVAL, remaining))
+
+    return load_message("no_patch_flag.txt", ticket_id=ticket_id)
 
 
 def check_branch_description(pr_body: str) -> str | None:
@@ -296,7 +302,8 @@ def main() -> None:
 
     checks = [
         lambda: check_trac_ticket(pr_body, pr_files),
-        lambda: check_trac_status(pr_body, ACCEPTABLE_STAGES),
+        lambda: check_trac_status(pr_body),
+        lambda: check_trac_has_patch(pr_body),
         lambda: check_branch_description(pr_body),
         lambda: check_ai_disclosure(pr_body),
         lambda: check_checklist(pr_body),

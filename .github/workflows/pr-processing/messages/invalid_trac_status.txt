@@ -1,14 +1,12 @@
-### Invalid Trac Ticket Status
+### Invalid Trac Ticket Stage
 
-The referenced ticket **ticket-{ticket_id}** is currently in the **{stage}** stage, which is not an accepted state for a new pull request.
-
-**Acceptable stages are:** {acceptable_stages}
+The referenced ticket **ticket-{ticket_id}** is currently in the **{stage}** stage. Only tickets in the **Accepted** stage are eligible for a pull request.
 
 **What to do:**
 
 1. Check the ticket at https://code.djangoproject.com/ticket/{ticket_id} to see its current status.
 2. If the ticket is **Unreviewed**, wait for the Django triage team to review and accept it before submitting a PR.
 3. If the ticket is **Ready for Checkin** or **Someday/Maybe**, please discuss the situation on the [Django Forum](https://forum.djangoproject.com/) before proceeding.
-4. Once the ticket is in an acceptable stage, reopen this PR.
+4. Once the ticket is in the **Accepted** stage, reopen this PR.
 
 For more information on the Django triage process see https://docs.djangoproject.com/en/dev/internals/contributing/triaging-tickets/.

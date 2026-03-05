@@ -15,8 +15,6 @@ import check_pr
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-ACCEPTABLE_STAGES = ["Needs Patch", "Needs PR Review", "Waiting on Author"]
-
 NON_DOCS_FILES = ["django/template/base.py", "tests/template_tests/test_base.py"]
 DOCS_ONLY_FILES = ["docs/topics/templates.txt", "docs/ref/templates/api.txt"]
 MIXED_FILES = ["django/template/base.py", "docs/topics/templates.txt"]
@@ -193,151 +191,125 @@ def test_trac_ticket_various_lengths_pass(ticket):
     assert check_pr.check_trac_ticket(body, NON_DOCS_FILES) is None
 
 
-# ── compute_trac_stage ────────────────────────────────────────────────────────
-
-
-def _stage_row(stage, has_patch="0", needs_better_patch="0", needs_docs="0", needs_tests="0"):
-    return {
-        "stage": stage,
-        "has_patch": has_patch,
-        "needs_better_patch": needs_better_patch,
-        "needs_docs": needs_docs,
-        "needs_tests": needs_tests,
-    }
-
-
-def test_compute_stage_unreviewed():
-    assert check_pr.compute_trac_stage(_stage_row("Unreviewed")) == "Unreviewed"
-
-
-def test_compute_stage_someday_maybe():
-    assert check_pr.compute_trac_stage(_stage_row("Someday/Maybe")) == "Someday/Maybe"
-
-
-def test_compute_stage_ready_for_checkin():
-    assert (
-        check_pr.compute_trac_stage(_stage_row("Ready for Checkin", has_patch="1"))
-        == "Ready for Checkin"
-    )
-
-
-def test_compute_stage_accepted_no_patch_is_needs_patch():
-    assert check_pr.compute_trac_stage(_stage_row("Accepted", has_patch="0")) == "Needs Patch"
-
-
-def test_compute_stage_accepted_with_patch_no_flags_is_needs_review():
-    assert check_pr.compute_trac_stage(_stage_row("Accepted", has_patch="1")) == "Needs PR Review"
-
-
-def test_compute_stage_needs_better_patch_is_waiting_on_author():
-    assert (
-        check_pr.compute_trac_stage(_stage_row("Accepted", has_patch="1", needs_better_patch="1"))
-        == "Waiting on Author"
-    )
-
-
-def test_compute_stage_needs_docs_is_waiting_on_author():
-    assert (
-        check_pr.compute_trac_stage(_stage_row("Accepted", has_patch="1", needs_docs="1"))
-        == "Waiting on Author"
-    )
-
-
-def test_compute_stage_needs_tests_is_waiting_on_author():
-    assert (
-        check_pr.compute_trac_stage(_stage_row("Accepted", has_patch="1", needs_tests="1"))
-        == "Waiting on Author"
-    )
-
-
 # ── Check 2: Trac ticket status ───────────────────────────────────────────────
 
 
 def test_trac_status_no_ticket_skips_check():
     """If there is no ticket reference the status check is a no-op."""
-    assert check_pr.check_trac_status("No ticket here.", ACCEPTABLE_STAGES) is None
+    assert check_pr.check_trac_status("No ticket here.") is None
 
 
-@pytest.mark.parametrize(
-    "stage,has_patch,needs_better_patch,expected_stage",
-    [
-        ("Accepted", "0", "0", "Needs Patch"),
-        ("Accepted", "1", "0", "Needs PR Review"),
-        ("Accepted", "1", "1", "Waiting on Author"),
-    ],
-)
-def test_trac_status_acceptable_stages_pass(stage, has_patch, needs_better_patch, expected_stage):
-    csv_text = make_trac_csv(
-        stage=stage, has_patch=has_patch, needs_better_patch=needs_better_patch
-    )
+def test_trac_status_accepted_passes():
+    csv_text = make_trac_csv(stage="Accepted", has_patch="0")
     with patch("httpx.get", mock_httpx_get(csv_text)):
-        result = check_pr.check_trac_status("ticket-36969", ACCEPTABLE_STAGES)
-    assert result is None, f"Expected {expected_stage} to pass but got a failure message"
+        assert check_pr.check_trac_status("ticket-36969") is None
 
 
-@pytest.mark.parametrize(
-    "stage,has_patch",
-    [
-        ("Unreviewed", "0"),
-        ("Ready for Checkin", "1"),
-        ("Someday/Maybe", "0"),
-    ],
-)
-def test_trac_status_unacceptable_stages_fail(stage, has_patch):
-    csv_text = make_trac_csv(stage=stage, has_patch=has_patch)
+@pytest.mark.parametrize("stage", ["Unreviewed", "Ready for Checkin", "Someday/Maybe"])
+def test_trac_status_non_accepted_stages_fail(stage):
+    csv_text = make_trac_csv(stage=stage, has_patch="0")
     with patch("httpx.get", mock_httpx_get(csv_text)):
-        assert check_pr.check_trac_status("ticket-36969", ACCEPTABLE_STAGES) is not None
+        assert check_pr.check_trac_status("ticket-36969") is not None
 
 
 def test_trac_status_failure_message_contains_ticket_id():
     csv_text = make_trac_csv(ticket_id="12345", stage="Unreviewed", has_patch="0")
     with patch("httpx.get", mock_httpx_get(csv_text)):
-        result = check_pr.check_trac_status("ticket-12345", ACCEPTABLE_STAGES)
+        result = check_pr.check_trac_status("ticket-12345")
     assert "12345" in result
 
 
 def test_trac_status_failure_message_contains_current_stage():
     csv_text = make_trac_csv(stage="Unreviewed", has_patch="0")
     with patch("httpx.get", mock_httpx_get(csv_text)):
-        result = check_pr.check_trac_status("ticket-36969", ACCEPTABLE_STAGES)
+        result = check_pr.check_trac_status("ticket-36969")
     assert "Unreviewed" in result
-
-
-def test_trac_status_failure_message_lists_acceptable_stages():
-    csv_text = make_trac_csv(stage="Unreviewed", has_patch="0")
-    with patch("httpx.get", mock_httpx_get(csv_text)):
-        result = check_pr.check_trac_status("ticket-36969", ACCEPTABLE_STAGES)
-    for q in ACCEPTABLE_STAGES:
-        assert q in result
 
 
 def test_trac_status_http_404_fails():
     """A 404 means the ticket doesn't exist — that is a failure."""
     with patch("httpx.get", side_effect=make_http_status_error(404)):
-        assert check_pr.check_trac_status("ticket-99999", ACCEPTABLE_STAGES) is not None
+        assert check_pr.check_trac_status("ticket-99999") is not None
 
 
 def test_trac_status_network_error_skips_check():
     """A transient network error should not close valid PRs."""
     with patch("httpx.get", side_effect=OSError("Connection refused")):
-        assert check_pr.check_trac_status("ticket-36969", ACCEPTABLE_STAGES) is None
+        assert check_pr.check_trac_status("ticket-36969") is None
 
 
 def test_trac_status_http_500_skips_check():
     """Trac server errors are treated as transient — skip the check."""
     with patch("httpx.get", side_effect=make_http_status_error(500)):
-        assert check_pr.check_trac_status("ticket-36969", ACCEPTABLE_STAGES) is None
+        assert check_pr.check_trac_status("ticket-36969") is None
 
 
-def test_trac_status_custom_acceptable_stages():
-    """ACCEPTABLE_STAGES is configurable — verify custom values are respected."""
-    csv_text = make_trac_csv(stage="Ready for Checkin", has_patch="1")
+# ── Check 3: has_patch flag ────────────────────────────────────────────────────
+
+
+def test_has_patch_no_ticket_skips_check():
+    assert check_pr.check_trac_has_patch("No ticket here.") is None
+
+
+def test_has_patch_already_set_passes():
+    csv_text = make_trac_csv(has_patch="1")
     with patch("httpx.get", mock_httpx_get(csv_text)):
-        assert check_pr.check_trac_status("ticket-36969", ACCEPTABLE_STAGES) is not None
-        assert (
-            check_pr.check_trac_status("ticket-36969", [*ACCEPTABLE_STAGES, "Ready for Checkin"])
-            is None
-        )
+        assert check_pr.check_trac_has_patch(VALID_PR_BODY) is None
+
+
+def test_has_patch_not_set_times_out_fails(monkeypatch):
+    monkeypatch.setattr(check_pr, "PATCH_POLL_TIMEOUT", 0)
+    monkeypatch.setattr(check_pr, "PATCH_POLL_INTERVAL", 0)
+    csv_text = make_trac_csv(has_patch="0")
+    with patch("httpx.get", mock_httpx_get(csv_text)):
+        with patch("time.sleep"):
+            result = check_pr.check_trac_has_patch(VALID_PR_BODY)
+    assert result is not None
+
+
+def test_has_patch_failure_message_contains_ticket_id(monkeypatch):
+    monkeypatch.setattr(check_pr, "PATCH_POLL_TIMEOUT", 0)
+    monkeypatch.setattr(check_pr, "PATCH_POLL_INTERVAL", 0)
+    csv_text = make_trac_csv(ticket_id="36969", has_patch="0")
+    with patch("httpx.get", mock_httpx_get(csv_text)):
+        with patch("time.sleep"):
+            result = check_pr.check_trac_has_patch(VALID_PR_BODY)
+    assert "36969" in result
+
+
+def test_has_patch_set_on_second_poll_passes(monkeypatch):
+    """If has_patch is set during polling, the check should pass."""
+    monkeypatch.setattr(check_pr, "PATCH_POLL_TIMEOUT", 60)
+    monkeypatch.setattr(check_pr, "PATCH_POLL_INTERVAL", 0)
+    responses = [make_trac_csv(has_patch="0"), make_trac_csv(has_patch="1")]
+    call_count = [0]
+
+    def mock_get(url, timeout):
+        resp = MagicMock(spec=httpx.Response)
+        resp.text = responses[min(call_count[0], len(responses) - 1)]
+        resp.raise_for_status = MagicMock()
+        call_count[0] += 1
+        return resp
+
+    with patch("httpx.get", mock_get):
+        with patch("time.sleep"):
+            assert check_pr.check_trac_has_patch(VALID_PR_BODY) is None
+
+
+def test_has_patch_network_error_skips_check():
+    with patch("httpx.get", side_effect=OSError("Connection refused")):
+        assert check_pr.check_trac_has_patch(VALID_PR_BODY) is None
+
+
+def test_has_patch_http_500_skips_check():
+    with patch("httpx.get", side_effect=make_http_status_error(500)):
+        assert check_pr.check_trac_has_patch(VALID_PR_BODY) is None
+
+
+def test_has_patch_http_404_skips_check():
+    """404 means ticket not found — already reported by check_trac_status, skip here."""
+    with patch("httpx.get", side_effect=make_http_status_error(404)):
+        assert check_pr.check_trac_has_patch(VALID_PR_BODY) is None
 
 
 # ── Check 3: Branch description ───────────────────────────────────────────────
@@ -489,13 +461,15 @@ def test_checklist_uppercase_x_passes():
 # ── Integration ───────────────────────────────────────────────────────────────
 
 
-def test_integration_fully_valid_pr_passes_all_checks():
+def test_integration_fully_valid_pr_passes_all_checks(monkeypatch):
     """A correctly filled-out PR body should pass every check."""
-    csv_text = make_trac_csv(stage="Accepted", has_patch="0")
+    monkeypatch.setattr(check_pr, "PATCH_POLL_TIMEOUT", 0)
+    csv_text = make_trac_csv(stage="Accepted", has_patch="1")
     with patch("httpx.get", mock_httpx_get(csv_text)):
         results = [
             check_pr.check_trac_ticket(VALID_PR_BODY, NON_DOCS_FILES),
-            check_pr.check_trac_status(VALID_PR_BODY, ACCEPTABLE_STAGES),
+            check_pr.check_trac_status(VALID_PR_BODY),
+            check_pr.check_trac_has_patch(VALID_PR_BODY),
             check_pr.check_branch_description(VALID_PR_BODY),
             check_pr.check_ai_disclosure(VALID_PR_BODY),
             check_pr.check_checklist(VALID_PR_BODY),
@@ -587,7 +561,7 @@ def test_pr5_ai_disclosure_passes():
 def test_pr5_trac_status_fails_for_missing_ticket():
     """PR #5 references ticket-37000 which does not exist; trac status check must fail."""
     with patch("httpx.get", side_effect=make_http_status_error(404)):
-        assert check_pr.check_trac_status(PR5_BODY, ACCEPTABLE_STAGES) is not None
+        assert check_pr.check_trac_status(PR5_BODY) is not None
 
 
 def test_crlf_branch_description_passes():
@@ -602,14 +576,16 @@ def test_crlf_checklist_passes():
     assert check_pr.check_checklist(body) is None
 
 
-def test_crlf_full_valid_pr_passes_all_checks():
+def test_crlf_full_valid_pr_passes_all_checks(monkeypatch):
     """A fully valid PR body with \\r\\n line endings must pass every check."""
+    monkeypatch.setattr(check_pr, "PATCH_POLL_TIMEOUT", 0)
     body = make_pr_body().replace("\n", "\r\n")
-    csv_text = make_trac_csv(stage="Accepted", has_patch="0")
+    csv_text = make_trac_csv(stage="Accepted", has_patch="1")
     with patch("httpx.get", mock_httpx_get(csv_text)):
         results = [
             check_pr.check_trac_ticket(body, NON_DOCS_FILES),
-            check_pr.check_trac_status(body, ACCEPTABLE_STAGES),
+            check_pr.check_trac_status(body),
+            check_pr.check_trac_has_patch(body),
             check_pr.check_branch_description(body),
             check_pr.check_ai_disclosure(body),
             check_pr.check_checklist(body),
