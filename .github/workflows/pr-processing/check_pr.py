@@ -12,9 +12,9 @@ import io
 import json
 import os
 import re
-import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 # ── Configuration (from environment) ─────────────────────────────────────────
 
@@ -29,16 +29,14 @@ ACCEPTABLE_QUEUES = [
     ).split(",")
 ]
 
-MESSAGES_DIR = os.path.join(os.path.dirname(__file__), "messages")
+MESSAGES_DIR = Path(__file__).parent / "messages"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
 def load_message(filename: str, **kwargs) -> str:
     """Load a message file and substitute any {variable} placeholders."""
-    path = os.path.join(MESSAGES_DIR, filename)
-    with open(path) as f:
-        text = f.read()
+    text = (MESSAGES_DIR / filename).read_text()
     return text.format_map(kwargs) if kwargs else text
 
 
@@ -62,7 +60,9 @@ def get_pr_files() -> list[str]:
     files: list[str] = []
     page = 1
     while True:
-        results = github_request("GET", f"/pulls/{PR_NUMBER}/files?per_page=100&page={page}")
+        results = github_request(
+            "GET", f"/pulls/{PR_NUMBER}/files?per_page=100&page={page}"
+        )
         if not results:
             break
         files.extend(f["filename"] for f in results)
@@ -151,10 +151,14 @@ def check_trac_status(pr_body: str, acceptable_queues: list[str]) -> str | None:
                 queue="(ticket not found)",
                 acceptable_queues=", ".join(acceptable_queues),
             )
-        print(f"Warning: HTTP {exc.code} fetching ticket {ticket_id} — skipping status check.")
+        print(
+            f"Warning: HTTP {exc.code} fetching ticket {ticket_id} — skipping status check."
+        )
         return None
     except Exception as exc:
-        print(f"Warning: Could not fetch ticket {ticket_id}: {exc} — skipping status check.")
+        print(
+            f"Warning: Could not fetch ticket {ticket_id}: {exc} — skipping status check."
+        )
         return None
 
     reader = csv.DictReader(io.StringIO(content))
@@ -180,9 +184,7 @@ def check_branch_description(pr_body: str) -> str | None:
     Check 3: The branch description must be present, non-placeholder, and
     at least 5 words long.
     """
-    placeholder = (
-        "Provide a concise overview of the issue or rationale behind the proposed changes."
-    )
+    placeholder = "Provide a concise overview of the issue or rationale behind the proposed changes."
 
     match = re.search(
         r"#### Branch description[ \t]*\n(.*?)(?=\n####|\Z)", pr_body, re.DOTALL
@@ -235,6 +237,7 @@ def check_ai_disclosure(pr_body: str) -> str | None:
             and not line.strip().startswith("<!--")
             and not line.strip().endswith("-->")
         ]
+        # Ensure PR author includes at least 5 words about their AI use
         if len(" ".join(extra_lines).split()) < 5:
             return load_message("missing_ai_description.txt")
 
@@ -245,9 +248,7 @@ def check_checklist(pr_body: str) -> str | None:
     """
     Check 5: The first five items in the Checklist section must be checked.
     """
-    match = re.search(
-        r"#### Checklist[ \t]*\n(.*?)(?=\n####|\Z)", pr_body, re.DOTALL
-    )
+    match = re.search(r"#### Checklist[ \t]*\n(.*?)(?=\n####|\Z)", pr_body, re.DOTALL)
     if not match:
         return load_message("incomplete_checklist.txt")
 
