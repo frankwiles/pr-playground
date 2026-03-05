@@ -177,14 +177,18 @@ def check_trac_has_patch(pr_body: str) -> str | None:
     url = f"https://code.djangoproject.com/ticket/{ticket_id}?format=csv"
     deadline = time.monotonic() + PATCH_POLL_TIMEOUT
 
+    elapsed = 0
     while True:
+        print(f"Checking has_patch flag for ticket-{ticket_id} (elapsed: {elapsed}s) ...")
         try:
             response = httpx.get(url, timeout=TRAC_TIMEOUT)
             response.raise_for_status()
             reader = csv.DictReader(io.StringIO(response.text))
             row = next(reader, None)
             if row is not None and row.get("has_patch", "0").strip() == "1":
+                print(f"✓ ticket-{ticket_id} has_patch flag is set.")
                 return None
+            print(f"  has_patch not yet set — will retry in {PATCH_POLL_INTERVAL}s.")
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 return None  # Ticket not found — already reported by check_trac_status.
@@ -199,7 +203,11 @@ def check_trac_has_patch(pr_body: str) -> str | None:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
-        time.sleep(min(PATCH_POLL_INTERVAL, remaining))
+        sleep_time = min(PATCH_POLL_INTERVAL, remaining)
+        time.sleep(sleep_time)
+        elapsed += int(sleep_time)
+
+    print(f"✗ ticket-{ticket_id} has_patch flag was not set after {PATCH_POLL_TIMEOUT}s.")
 
     return load_message("no_patch_flag.txt", ticket_id=ticket_id)
 
