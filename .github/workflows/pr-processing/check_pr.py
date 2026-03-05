@@ -214,7 +214,7 @@ def check_trac_has_patch(pr_body: str) -> str | None:
 
 def check_branch_description(pr_body: str) -> str | None:
     """
-    Check 3: The branch description must be present, non-placeholder, and
+    Check 4: The branch description must be present, non-placeholder, and
     at least 5 words long.
     """
     placeholder = (
@@ -238,7 +238,7 @@ def check_branch_description(pr_body: str) -> str | None:
 
 def check_ai_disclosure(pr_body: str) -> str | None:
     """
-    Check 4: Exactly one AI disclosure checkbox must be selected.
+    Check 5: Exactly one AI disclosure checkbox must be selected.
     If the "AI tools were used" option is checked, at least 5 words of
     additional description must be present in that section.
     """
@@ -275,7 +275,7 @@ def check_ai_disclosure(pr_body: str) -> str | None:
 
 def check_checklist(pr_body: str) -> str | None:
     """
-    Check 5: The first five items in the Checklist section must be checked.
+    Check 6: The first five items in the Checklist section must be checked.
     """
     match = re.search(r"#### Checklist[ \t]*\r?\n(.*?)(?=\r?\n####|\Z)", pr_body, re.DOTALL)
     if not match:
