@@ -481,7 +481,7 @@ def test_integration_blank_body_fails_non_status_checks():
 
 def test_integration_unedited_template_fails_all_checks():
     """Submitting the raw PR template without filling anything in fails all checks."""
-    with open("pr-template.md") as f:
+    with open("pull_request_template.md") as f:
         raw_template = f.read()
     results = [
         check_pr.check_trac_ticket(raw_template, NON_DOCS_FILES),
