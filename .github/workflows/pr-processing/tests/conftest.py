@@ -2,6 +2,7 @@
 pytest configuration: set required environment variables before check_pr is
 imported so the module-level constants don't raise KeyError.
 """
+
 import os
 import sys
 

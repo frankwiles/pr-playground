@@ -9,12 +9,11 @@ contributors see every problem in a single pass.
 
 import csv
 import io
-import json
 import os
 import re
-import urllib.error
-import urllib.request
 from pathlib import Path
+
+import httpx
 
 # ── Configuration (from environment) ─────────────────────────────────────────
 
@@ -30,6 +29,12 @@ ACCEPTABLE_STAGES = [
 ]
 
 MESSAGES_DIR = Path(__file__).parent / "messages"
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+MIN_WORDS = 5
+GITHUB_PER_PAGE = 100
+TRAC_TIMEOUT = 15
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -47,12 +52,10 @@ def github_request(method: str, path: str, data: dict | None = None) -> object:
         "Authorization": f"Bearer {GITHUB_TOKEN}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        "Content-Type": "application/json",
     }
-    body = json.dumps(data).encode() if data is not None else None
-    req = urllib.request.Request(url, data=body, headers=headers, method=method)
-    with urllib.request.urlopen(req) as resp:
-        return json.loads(resp.read())
+    response = httpx.request(method, url, headers=headers, json=data)
+    response.raise_for_status()
+    return response.json()
 
 
 def get_pr_files() -> list[str]:
@@ -61,12 +64,12 @@ def get_pr_files() -> list[str]:
     page = 1
     while True:
         results = github_request(
-            "GET", f"/pulls/{PR_NUMBER}/files?per_page=100&page={page}"
+            "GET", f"/pulls/{PR_NUMBER}/files?per_page={GITHUB_PER_PAGE}&page={page}"
         )
         if not results:
             break
         files.extend(f["filename"] for f in results)
-        if len(results) < 100:
+        if len(results) < GITHUB_PER_PAGE:
             break
         page += 1
     return files
@@ -141,10 +144,10 @@ def check_trac_status(pr_body: str, acceptable_stages: list[str]) -> str | None:
     url = f"https://code.djangoproject.com/ticket/{ticket_id}?format=csv"
 
     try:
-        with urllib.request.urlopen(url, timeout=15) as resp:
-            content = resp.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
+        response = httpx.get(url, timeout=TRAC_TIMEOUT)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
             return load_message(
                 "invalid_trac_status.txt",
                 ticket_id=ticket_id,
@@ -152,16 +155,14 @@ def check_trac_status(pr_body: str, acceptable_stages: list[str]) -> str | None:
                 acceptable_stages=", ".join(acceptable_stages),
             )
         print(
-            f"Warning: HTTP {exc.code} fetching ticket {ticket_id} — skipping status check."
+            f"Warning: HTTP {exc.response.status_code} fetching ticket {ticket_id} — skipping status check."
         )
         return None
     except Exception as exc:
-        print(
-            f"Warning: Could not fetch ticket {ticket_id}: {exc} — skipping status check."
-        )
+        print(f"Warning: Could not fetch ticket {ticket_id}: {exc} — skipping status check.")
         return None
 
-    reader = csv.DictReader(io.StringIO(content))
+    reader = csv.DictReader(io.StringIO(response.text))
     row = next(reader, None)
     if row is None:
         print(f"Warning: Empty CSV for ticket {ticket_id} — skipping status check.")
@@ -184,18 +185,18 @@ def check_branch_description(pr_body: str) -> str | None:
     Check 3: The branch description must be present, non-placeholder, and
     at least 5 words long.
     """
-    placeholder = "Provide a concise overview of the issue or rationale behind the proposed changes."
-
-    match = re.search(
-        r"#### Branch description[ \t]*\n(.*?)(?=\n####|\Z)", pr_body, re.DOTALL
+    placeholder = (
+        "Provide a concise overview of the issue or rationale behind the proposed changes."
     )
+
+    match = re.search(r"#### Branch description[ \t]*\n(.*?)(?=\n####|\Z)", pr_body, re.DOTALL)
     if not match:
         return load_message("missing_description.txt")
 
     # Strip HTML comments before evaluating content.
     cleaned = re.sub(r"<!--.*?-->", "", match.group(1), flags=re.DOTALL).strip()
 
-    if not cleaned or cleaned == placeholder or len(cleaned.split()) < 5:
+    if not cleaned or cleaned == placeholder or len(cleaned.split()) < MIN_WORDS:
         return load_message("missing_description.txt")
 
     return None
@@ -214,17 +215,11 @@ def check_ai_disclosure(pr_body: str) -> str | None:
         return load_message("missing_ai_disclosure.txt")
 
     section = match.group(1)
-    no_ai_checked = bool(
-        re.search(r"-\s*\[x\].*?No AI tools were used", section, re.IGNORECASE)
-    )
-    ai_used_checked = bool(
-        re.search(r"-\s*\[x\].*?If AI tools were used", section, re.IGNORECASE)
-    )
+    no_ai_checked = bool(re.search(r"-\s*\[x\].*?No AI tools were used", section, re.IGNORECASE))
+    ai_used_checked = bool(re.search(r"-\s*\[x\].*?If AI tools were used", section, re.IGNORECASE))
 
     # Must check exactly one option.
-    if not no_ai_checked and not ai_used_checked:
-        return load_message("missing_ai_disclosure.txt")
-    if no_ai_checked and ai_used_checked:
+    if no_ai_checked == ai_used_checked:
         return load_message("missing_ai_disclosure.txt")
 
     if ai_used_checked:
@@ -238,7 +233,7 @@ def check_ai_disclosure(pr_body: str) -> str | None:
             and not line.strip().endswith("-->")
         ]
         # Ensure PR author includes at least 5 words about their AI use
-        if len(" ".join(extra_lines).split()) < 5:
+        if len(" ".join(extra_lines).split()) < MIN_WORDS:
             return load_message("missing_ai_description.txt")
 
     return None

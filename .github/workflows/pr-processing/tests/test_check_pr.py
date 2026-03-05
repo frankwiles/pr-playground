@@ -6,9 +6,9 @@ failing PR body variants so that changes to parsing logic surface
 immediately.
 """
 
-import urllib.error
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 import check_pr
@@ -88,16 +88,22 @@ def make_trac_csv(
     """Build a minimal Trac CSV response for use in mock HTTP calls."""
     header = "id,summary,reporter,owner,description,type,status,component,version,severity,resolution,keywords,cc,stage,has_patch,needs_docs,needs_tests,needs_better_patch,easy,ui_ux"
     row = f"{ticket_id},Some summary,reporter,,description,Bug,new,core,5.0,Normal,,,,{stage},{has_patch},{needs_docs},{needs_tests},{needs_better_patch},0,0"
-    return (header + "\n" + row + "\n").encode()
+    return header + "\n" + row + "\n"
 
 
-def mock_urlopen(csv_bytes):
-    """Return a context-manager mock that yields a response with csv_bytes."""
-    mock_resp = MagicMock()
-    mock_resp.read.return_value = csv_bytes
-    mock_resp.__enter__ = lambda s: s
-    mock_resp.__exit__ = MagicMock(return_value=False)
+def mock_httpx_get(csv_text):
+    """Return a mock for httpx.get that returns a response with the given text."""
+    mock_resp = MagicMock(spec=httpx.Response)
+    mock_resp.text = csv_text
+    mock_resp.raise_for_status = MagicMock()
     return MagicMock(return_value=mock_resp)
+
+
+def make_http_status_error(status_code: int) -> httpx.HTTPStatusError:
+    """Build an httpx.HTTPStatusError with the given status code."""
+    request = httpx.Request("GET", "https://example.com")
+    response = httpx.Response(status_code, request=request)
+    return httpx.HTTPStatusError("error", request=request, response=response)
 
 
 # ── Check 1: Trac ticket presence ─────────────────────────────────────────────
@@ -172,7 +178,10 @@ def test_compute_stage_someday_maybe():
 
 
 def test_compute_stage_ready_for_checkin():
-    assert check_pr.compute_trac_stage(_stage_row("Ready for Checkin", has_patch="1")) == "Ready for Checkin"
+    assert (
+        check_pr.compute_trac_stage(_stage_row("Ready for Checkin", has_patch="1"))
+        == "Ready for Checkin"
+    )
 
 
 def test_compute_stage_accepted_no_patch_is_needs_patch():
@@ -184,15 +193,24 @@ def test_compute_stage_accepted_with_patch_no_flags_is_needs_review():
 
 
 def test_compute_stage_needs_better_patch_is_waiting_on_author():
-    assert check_pr.compute_trac_stage(_stage_row("Accepted", has_patch="1", needs_better_patch="1")) == "Waiting on Author"
+    assert (
+        check_pr.compute_trac_stage(_stage_row("Accepted", has_patch="1", needs_better_patch="1"))
+        == "Waiting on Author"
+    )
 
 
 def test_compute_stage_needs_docs_is_waiting_on_author():
-    assert check_pr.compute_trac_stage(_stage_row("Accepted", has_patch="1", needs_docs="1")) == "Waiting on Author"
+    assert (
+        check_pr.compute_trac_stage(_stage_row("Accepted", has_patch="1", needs_docs="1"))
+        == "Waiting on Author"
+    )
 
 
 def test_compute_stage_needs_tests_is_waiting_on_author():
-    assert check_pr.compute_trac_stage(_stage_row("Accepted", has_patch="1", needs_tests="1")) == "Waiting on Author"
+    assert (
+        check_pr.compute_trac_stage(_stage_row("Accepted", has_patch="1", needs_tests="1"))
+        == "Waiting on Author"
+    )
 
 
 # ── Check 2: Trac ticket status ───────────────────────────────────────────────
@@ -203,46 +221,54 @@ def test_trac_status_no_ticket_skips_check():
     assert check_pr.check_trac_status("No ticket here.", ACCEPTABLE_STAGES) is None
 
 
-@pytest.mark.parametrize("stage,has_patch,needs_better_patch,expected_stage", [
-    ("Accepted", "0", "0", "Needs Patch"),
-    ("Accepted", "1", "0", "Needs PR Review"),
-    ("Accepted", "1", "1", "Waiting on Author"),
-])
+@pytest.mark.parametrize(
+    "stage,has_patch,needs_better_patch,expected_stage",
+    [
+        ("Accepted", "0", "0", "Needs Patch"),
+        ("Accepted", "1", "0", "Needs PR Review"),
+        ("Accepted", "1", "1", "Waiting on Author"),
+    ],
+)
 def test_trac_status_acceptable_stages_pass(stage, has_patch, needs_better_patch, expected_stage):
-    csv_bytes = make_trac_csv(stage=stage, has_patch=has_patch, needs_better_patch=needs_better_patch)
-    with patch("urllib.request.urlopen", mock_urlopen(csv_bytes)):
+    csv_text = make_trac_csv(
+        stage=stage, has_patch=has_patch, needs_better_patch=needs_better_patch
+    )
+    with patch("httpx.get", mock_httpx_get(csv_text)):
         result = check_pr.check_trac_status("ticket-36969", ACCEPTABLE_STAGES)
     assert result is None, f"Expected {expected_stage} to pass but got a failure message"
 
 
-@pytest.mark.parametrize("stage,has_patch", [
-    ("Unreviewed", "0"),
-    ("Ready for Checkin", "1"),
-    ("Someday/Maybe", "0"),
-])
+@pytest.mark.parametrize(
+    "stage,has_patch",
+    [
+        ("Unreviewed", "0"),
+        ("Ready for Checkin", "1"),
+        ("Someday/Maybe", "0"),
+    ],
+)
 def test_trac_status_unacceptable_stages_fail(stage, has_patch):
-    csv_bytes = make_trac_csv(stage=stage, has_patch=has_patch)
-    with patch("urllib.request.urlopen", mock_urlopen(csv_bytes)):
+    csv_text = make_trac_csv(stage=stage, has_patch=has_patch)
+    with patch("httpx.get", mock_httpx_get(csv_text)):
         assert check_pr.check_trac_status("ticket-36969", ACCEPTABLE_STAGES) is not None
 
 
 def test_trac_status_failure_message_contains_ticket_id():
-    csv_bytes = make_trac_csv(ticket_id="12345", stage="Unreviewed", has_patch="0")
-    with patch("urllib.request.urlopen", mock_urlopen(csv_bytes)):
+    csv_text = make_trac_csv(ticket_id="12345", stage="Unreviewed", has_patch="0")
+    with patch("httpx.get", mock_httpx_get(csv_text)):
         result = check_pr.check_trac_status("ticket-12345", ACCEPTABLE_STAGES)
     assert "12345" in result
 
 
 def test_trac_status_failure_message_contains_current_stage():
-    csv_bytes = make_trac_csv(stage="Unreviewed", has_patch="0")
-    with patch("urllib.request.urlopen", mock_urlopen(csv_bytes)):
+    csv_text = make_trac_csv(stage="Unreviewed", has_patch="0")
+    with patch("httpx.get", mock_httpx_get(csv_text)):
         result = check_pr.check_trac_status("ticket-36969", ACCEPTABLE_STAGES)
     assert "Unreviewed" in result
 
 
 def test_trac_status_failure_message_lists_acceptable_stages():
-    csv_bytes = make_trac_csv(stage="Unreviewed", has_patch="0")
-    with patch("urllib.request.urlopen", mock_urlopen(csv_bytes)):
+    csv_text = make_trac_csv(stage="Unreviewed", has_patch="0")
+    with patch("httpx.get", mock_httpx_get(csv_text)):
         result = check_pr.check_trac_status("ticket-36969", ACCEPTABLE_STAGES)
     for q in ACCEPTABLE_STAGES:
         assert q in result
@@ -250,30 +276,31 @@ def test_trac_status_failure_message_lists_acceptable_stages():
 
 def test_trac_status_http_404_fails():
     """A 404 means the ticket doesn't exist — that is a failure."""
-    error = urllib.error.HTTPError(url="", code=404, msg="Not Found", hdrs={}, fp=None)
-    with patch("urllib.request.urlopen", side_effect=error):
+    with patch("httpx.get", side_effect=make_http_status_error(404)):
         assert check_pr.check_trac_status("ticket-99999", ACCEPTABLE_STAGES) is not None
 
 
 def test_trac_status_network_error_skips_check():
     """A transient network error should not close valid PRs."""
-    with patch("urllib.request.urlopen", side_effect=OSError("Connection refused")):
+    with patch("httpx.get", side_effect=OSError("Connection refused")):
         assert check_pr.check_trac_status("ticket-36969", ACCEPTABLE_STAGES) is None
 
 
 def test_trac_status_http_500_skips_check():
     """Trac server errors are treated as transient — skip the check."""
-    error = urllib.error.HTTPError(url="", code=500, msg="Server Error", hdrs={}, fp=None)
-    with patch("urllib.request.urlopen", side_effect=error):
+    with patch("httpx.get", side_effect=make_http_status_error(500)):
         assert check_pr.check_trac_status("ticket-36969", ACCEPTABLE_STAGES) is None
 
 
 def test_trac_status_custom_acceptable_stages():
     """ACCEPTABLE_STAGES is configurable — verify custom values are respected."""
-    csv_bytes = make_trac_csv(stage="Ready for Checkin", has_patch="1")
-    with patch("urllib.request.urlopen", mock_urlopen(csv_bytes)):
+    csv_text = make_trac_csv(stage="Ready for Checkin", has_patch="1")
+    with patch("httpx.get", mock_httpx_get(csv_text)):
         assert check_pr.check_trac_status("ticket-36969", ACCEPTABLE_STAGES) is not None
-        assert check_pr.check_trac_status("ticket-36969", [*ACCEPTABLE_STAGES, "Ready for Checkin"]) is None
+        assert (
+            check_pr.check_trac_status("ticket-36969", [*ACCEPTABLE_STAGES, "Ready for Checkin"])
+            is None
+        )
 
 
 # ── Check 3: Branch description ───────────────────────────────────────────────
@@ -284,7 +311,9 @@ def test_description_valid_passes():
 
 
 def test_description_placeholder_fails():
-    body = make_pr_body(description="Provide a concise overview of the issue or rationale behind the proposed changes.")
+    body = make_pr_body(
+        description="Provide a concise overview of the issue or rationale behind the proposed changes."
+    )
     assert check_pr.check_branch_description(body) is not None
 
 
@@ -321,7 +350,9 @@ def test_description_missing_section_header_fails():
 
 
 def test_description_multiline_passes():
-    body = make_pr_body(description="This PR fixes a bug in the ORM.\nThe issue affects queries with multiple joins.")
+    body = make_pr_body(
+        description="This PR fixes a bug in the ORM.\nThe issue affects queries with multiple joins."
+    )
     assert check_pr.check_branch_description(body) is None
 
 
@@ -362,7 +393,9 @@ def test_ai_used_short_description_fails():
 
 
 def test_ai_used_exactly_five_word_description_passes():
-    body = make_pr_body(no_ai_checked=False, ai_used_checked=True, ai_description="Used Claude for code review.")
+    body = make_pr_body(
+        no_ai_checked=False, ai_used_checked=True, ai_description="Used Claude for code review."
+    )
     assert check_pr.check_ai_disclosure(body) is None
 
 
@@ -373,7 +406,9 @@ def test_ai_missing_section_fails():
 
 def test_ai_uppercase_x_in_checkbox_passes():
     """[X] (uppercase) should be treated the same as [x]."""
-    body = VALID_PR_BODY.replace("- [x] **No AI tools were used**", "- [X] **No AI tools were used**")
+    body = VALID_PR_BODY.replace(
+        "- [x] **No AI tools were used**", "- [X] **No AI tools were used**"
+    )
     assert check_pr.check_ai_disclosure(body) is None
 
 
@@ -419,8 +454,8 @@ def test_checklist_uppercase_x_passes():
 
 def test_integration_fully_valid_pr_passes_all_checks():
     """A correctly filled-out PR body should pass every check."""
-    csv_bytes = make_trac_csv(stage="Accepted", has_patch="0")
-    with patch("urllib.request.urlopen", mock_urlopen(csv_bytes)):
+    csv_text = make_trac_csv(stage="Accepted", has_patch="0")
+    with patch("httpx.get", mock_httpx_get(csv_text)):
         results = [
             check_pr.check_trac_ticket(VALID_PR_BODY, NON_DOCS_FILES),
             check_pr.check_trac_status(VALID_PR_BODY, ACCEPTABLE_STAGES),
