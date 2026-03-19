@@ -35,11 +35,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-
       - name: Install dependencies
-        run: uv sync
+        run: pip install -e .
 
       - name: Run PR quality checks
         env:
@@ -56,4 +53,4 @@ jobs:
           #   "Ready for Checkin" — approved, awaiting merger
           # ----------------------------------------------------------------
           ACCEPTABLE_STAGES: "Needs Patch,Needs PR Review,Waiting on Author"
-        run: uv run python .github/workflows/pr-processing/check_pr.py
+        run: python .github/workflows/pr-processing/check_pr.py
