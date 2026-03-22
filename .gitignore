@@ -1,6 +1,8 @@
+__pycache__/
+*.pyc
 .venv/
 venv/
 .envrc
-.local_env 
-CLAUDE.md 
+.local_env
+CLAUDE.md
 AGENTS.md

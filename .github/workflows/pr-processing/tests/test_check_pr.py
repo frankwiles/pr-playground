@@ -8,10 +8,9 @@ immediately.
 
 from unittest.mock import MagicMock, patch
 
+import check_pr
 import httpx
 import pytest
-
-import check_pr
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -189,6 +188,48 @@ def test_trac_ticket_empty_file_list_requires_ticket():
 def test_trac_ticket_various_lengths_pass(ticket):
     body = make_pr_body(ticket=ticket)
     assert check_pr.check_trac_ticket(body, NON_DOCS_FILES) is None
+
+
+# ── Check 1b: N/A ticket (trivial PRs) ─────────────────────────────────────────
+
+
+@pytest.mark.parametrize("ticket", ["N/A", "N/A - typo", "n/a", "n/a - typo"])
+def test_trac_ticket_na_returns_sentinel(ticket):
+    body = make_pr_body(ticket=ticket)
+    assert check_pr.check_trac_ticket(body, NON_DOCS_FILES) is check_pr.NA_TICKET
+
+
+@pytest.mark.parametrize("ticket", ["N/A - docs", "N/A - other reason"])
+def test_trac_ticket_na_invalid_reason_fails(ticket):
+    body = make_pr_body(ticket=ticket)
+    assert check_pr.check_trac_ticket(body, NON_DOCS_FILES) is not None
+
+
+def test_na_ticket_results_include_skipped_sentinels(monkeypatch):
+    """SKIPPED sentinel appears for status and has_patch when ticket is N/A."""
+    body = make_pr_body(ticket="N/A - typo")
+    monkeypatch.setattr(check_pr, "PR_NUMBER", "10")
+    monkeypatch.setattr(check_pr, "PR_BODY", body)
+    monkeypatch.setattr(check_pr, "get_pr_files", lambda: NON_DOCS_FILES)
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+
+    captured_results = []
+
+    original_write = check_pr.write_job_summary
+
+    def capture_results(pr_number, results):
+        captured_results.extend(results)
+        original_write(pr_number, results)
+
+    monkeypatch.setattr(check_pr, "write_job_summary", capture_results)
+    monkeypatch.setattr(check_pr, "github_request", MagicMock())
+
+    check_pr.main()
+
+    result_map = dict(captured_results)
+    assert result_map["Trac ticket referenced"] is None  # N/A passes check 1
+    assert result_map["Trac ticket status is Accepted"] is check_pr.SKIPPED
+    assert result_map["Trac ticket has_patch flag set"] is check_pr.SKIPPED
 
 
 # ── Check 2: Trac ticket status ───────────────────────────────────────────────

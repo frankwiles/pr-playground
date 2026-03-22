@@ -95,11 +95,15 @@ def rewrite_ticket_links(pr_body: str) -> str:
 # ── Checks ────────────────────────────────────────────────────────────────────
 
 
-def check_trac_ticket(pr_body: str, pr_files: list[str]) -> str | None:
+NA_TICKET = object()  # sentinel: ticket field is "N/A" (trivial PR)
+
+
+def check_trac_ticket(pr_body: str, pr_files: list[str]) -> str | None | object:
     """
     Check 1: A Trac ticket must be referenced.
 
     Exception: if the PR only touches files under docs/ no ticket is required.
+    "N/A" or "N/A - typo" is also accepted for trivial PRs.
     """
     if pr_files and all(f.startswith("docs/") for f in pr_files):
         return None  # docs-only PR — ticket not required
@@ -112,6 +116,10 @@ def check_trac_ticket(pr_body: str, pr_files: list[str]) -> str | None:
 
     if re.search(r"\bticket-\d+\b", section, re.IGNORECASE):
         return None  # valid ticket reference found
+
+    cleaned = re.sub(r"<!--.*?-->", "", section, flags=re.DOTALL).strip()
+    if re.match(r"^N/A(\s*-\s*typo)?$", cleaned, re.IGNORECASE):
+        return NA_TICKET  # trivial PR — skip Trac checks but don't fail
 
     return load_message("no_trac_ticket.txt")
 
@@ -243,7 +251,9 @@ def check_ai_disclosure(pr_body: str) -> str | None:
     additional description must be present in that section.
     """
     match = re.search(
-        r"#### AI Assistance Disclosure[^\n]*\n(.*?)(?=\r?\n####|\Z)", pr_body, re.DOTALL
+        r"#### AI Assistance Disclosure[^\n]*\n(.*?)(?=\r?\n####|\Z)",
+        pr_body,
+        re.DOTALL,
     )
     if not match:
         return load_message("missing_ai_disclosure.txt")
@@ -347,7 +357,11 @@ def main() -> None:
         status_result = check_trac_status(pr_body)
         has_patch_result = check_trac_has_patch(pr_body)
     else:
-        print("No Trac ticket — skipping status and has_patch checks.")
+        if ticket_result is NA_TICKET:
+            print("N/A ticket — skipping Trac status and has_patch checks.")
+            ticket_result = None  # N/A is a pass for reporting
+        else:
+            print("No Trac ticket — skipping status and has_patch checks.")
         status_result = SKIPPED
         has_patch_result = SKIPPED
 

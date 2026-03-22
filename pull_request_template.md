@@ -1,5 +1,6 @@
 #### Trac ticket number
-<!-- Replace XXXXX with the corresponding Trac ticket number. All PRs must have a Trac ticket or be only docs changes -->
+<!-- Replace XXXXX with the corresponding Trac ticket number. -->
+<!-- Or delete the line and write "N/A" for trivial PRs, or "N/A - typo" for typo fixes. -->
 
 ticket-XXXXX
 
